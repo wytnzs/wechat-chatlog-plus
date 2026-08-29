@@ -1,72 +1,109 @@
 # WeChat Chatlog Plus
 
-A local companion service for [Chatlog](https://github.com/majin72/chatlog). It enriches
-Chatlog's JSON responses with usable media URLs, media availability checks, and local
-voice transcription powered by Faster Whisper.
+A reproducible, local-only Windows stack for querying WeChat chat history and resolving or
+transcribing local media. It includes:
 
-Chatlog Plus does **not** contain or upload WeChat databases, keys, media, transcripts,
-or account information. Both services listen on loopback by default.
+- a pinned, source-reproducible Chatlog core on `127.0.0.1:5030`;
+- automatic WeChat 3.x/4.x key discovery and validation;
+- Windows DPAPI storage for keys (current Windows user only);
+- the Chatlog Plus media and voice companion on `127.0.0.1:5031`;
+- one-command start, diagnostics, startup registration, and uninstall scripts.
+
+No WeChat database, key, media file, transcript, account detail, or model is committed to
+this repository or uploaded by the stack.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    W[WeChat desktop data] --> C[Chatlog core :5030]
+    W[WeChat process + local data] -->|validated key scan| K[DPAPI key blobs]
+    K -->|process environment only| C[Chatlog core :5030]
+    W --> C
     C --> P[Chatlog Plus :5031]
     P --> A[Local scripts / AI clients]
-    P --> F[Faster Whisper]
+    P --> F[Local Faster Whisper]
     P --> S[Local transcript cache]
 ```
 
-- **Chatlog core (`127.0.0.1:5030`)** decrypts and queries the user's local WeChat data.
-- **Chatlog Plus (`127.0.0.1:5031`)** proxies supported queries, resolves media, and
-  transcribes voice messages locally.
-- The two layers remain separate so this repository never redistributes a modified Chatlog
-  binary or private data.
-
-## Features
-
-- Adds direct URLs for image, video, voice, and file messages.
-- Checks whether referenced media is actually present locally.
-- Marks videos for which only a thumbnail is available.
-- Transcribes voice messages with a local Faster Whisper model.
-- Caches transcripts in SQLite so the same voice message is not processed twice.
-- Supports HTTP and command-line use.
+The key extractor is built from Chatlog commit
+[`eb9572e`](https://github.com/imldy/chatlog/commit/eb9572ee028cbaa72a50749b9dfe6630b317228f).
+The small patch in [`patches/chatlog-safe-local.patch`](patches/chatlog-safe-local.patch)
+redacts keys from logs, prevents the key command from persisting plaintext keys, and emits
+the non-secret metadata needed by the DPAPI wrapper. See
+[`docs/KEY_EXTRACTION.md`](docs/KEY_EXTRACTION.md) for the exact scan and validation flow.
 
 ## Requirements
 
-- Windows 10/11
+- Windows 10 or 11 (64-bit)
 - Python 3.10 or newer
-- A working local [Chatlog](https://github.com/majin72/chatlog) server on port 5030
-- Enough disk space for the selected Faster Whisper model
+- Git
+- WeChat desktop, logged in and open while keys are saved the first time
+
+Go and GCC are needed only when using `-BuildCoreFromSource`. Normal setup downloads the
+pinned release binary and verifies its SHA-256 digest before installing it.
 
 ## Quick start
 
-1. Install and configure Chatlog from its upstream documentation, then start its local HTTP
-   server at `http://127.0.0.1:5030`.
-2. Clone this repository and open PowerShell in the repository directory.
-3. Install the Python environment:
+Open PowerShell in the cloned repository:
 
-   ```powershell
-   Set-ExecutionPolicy -Scope Process Bypass
-   .\scripts\setup.ps1
-   ```
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\setup.ps1
+.\scripts\save-wechat-keys.ps1
+.\scripts\start-stack.ps1
+```
 
-4. Start the enhanced service:
+Keep WeChat open on its main window during `save-wechat-keys.ps1`. When several WeChat
+processes exist, the wrapper tries their PIDs in turn and saves only a key that validates
+against the corresponding local database and image data.
 
-   ```powershell
-   .\scripts\start-chatlog-plus.ps1
-   ```
+Check the installation:
 
-5. Check both layers:
+```powershell
+.\scripts\doctor.ps1
+Invoke-RestMethod http://127.0.0.1:5031/health
+```
 
-   ```powershell
-   .\.venv\Scripts\python.exe .\chatlog_plus.py doctor
-   Invoke-RestMethod http://127.0.0.1:5031/health
-   ```
+The stack is stored under `%LOCALAPPDATA%\WeChatChatlogStack` by default. To put large
+models, decrypted working data, and caches on another drive, set the location before setup:
 
-By default, models, logs, and the transcript cache are stored under
-`%LOCALAPPDATA%\ChatlogPlus`, outside the Git repository.
+```powershell
+$env:WECHAT_CHATLOG_HOME = 'D:\WeChatChatlogStack'
+.\scripts\setup.ps1
+```
+
+Use the same environment variable in future PowerShell sessions. Startup registration captures
+both the repository script path and the resolved stack home used when it is registered.
+
+## Lifecycle
+
+```powershell
+# Start or stop both layers
+.\scripts\start-stack.ps1
+.\scripts\stop-stack.ps1
+
+# Refresh keys after a WeChat update or account change
+.\scripts\save-wechat-keys.ps1 -Force
+
+# Start automatically after Windows sign-in
+.\scripts\register-startup.ps1
+
+# Remove startup registration
+.\scripts\unregister-startup.ps1
+
+# Preview, then uninstall the managed local state
+.\scripts\uninstall.ps1 -WhatIf
+.\scripts\uninstall.ps1
+```
+
+To rebuild the core from the exact source instead of downloading the verified release:
+
+```powershell
+.\scripts\setup.ps1 -BuildCoreFromSource
+```
+
+The build script uses an isolated, commit-named checkout, refuses to overwrite dirty source,
+applies the checked-in patch, and builds with `CGO_ENABLED=1`.
 
 ## Usage
 
@@ -95,30 +132,21 @@ HTTP equivalent:
 http://127.0.0.1:5031/api/v1/chatlog?time=2026-08-26&talker=CONTACT_OR_GROUP&format=json&resolve_media=1&transcribe_voice=1
 ```
 
-Transcribe one Chatlog voice ID:
-
-```powershell
-.\.venv\Scripts\python.exe .\chatlog_plus.py transcribe VOICE_ID
-```
-
 ## Configuration
-
-All configuration is optional and uses environment variables. See `.env.example` for the
-full list.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CHATLOG_CORE_URL` | `http://127.0.0.1:5030` | Chatlog core URL |
+| `WECHAT_CHATLOG_HOME` | `%LOCALAPPDATA%\WeChatChatlogStack` | Core, model, cache, log, and DPAPI state root |
+| `CHATLOG_CORE_URL` | `http://127.0.0.1:5030` | Chatlog core URL used by Plus |
 | `CHATLOG_PLUS_HOST` | `127.0.0.1` | Enhanced API bind address |
 | `CHATLOG_PLUS_PORT` | `5031` | Enhanced API port |
-| `CHATLOG_PLUS_STATE_DIR` | `%LOCALAPPDATA%\ChatlogPlus` | Local state directory |
 | `CHATLOG_PLUS_MODEL` | `turbo` | Faster Whisper model |
-| `CHATLOG_PLUS_LANGUAGE` | `zh` | Requested transcription language; use `auto` to detect |
+| `CHATLOG_PLUS_LANGUAGE` | `zh` | Language, or `auto` for detection |
 | `CHATLOG_PLUS_DEVICE` | `auto` | `auto`, `cpu`, or `cuda` |
-| `CHATLOG_PLUS_COMPUTE_TYPE` | `int8` on CPU, `float16` on CUDA | Whisper compute type |
+| `CHATLOG_PLUS_COMPUTE_TYPE` | automatic | `int8` on CPU or `float16` on CUDA |
 
-For privacy, do not bind either service to `0.0.0.0` unless you also add authentication and
-a trusted network boundary.
+Do not bind either service to `0.0.0.0` without adding authentication and a trusted network
+boundary.
 
 ## API
 
@@ -126,23 +154,17 @@ a trusted network boundary.
 - `GET /api/v1/chatlog` — Chatlog query plus optional enrichment
 - `GET /api/v1/transcript/<voice_id>` — transcribe one voice message
 - `GET /api/v1/media/status?type=<type>&key=<key>` — probe one media item
-- `GET /api/v1/session`, `/api/v1/contact`, `/api/v1/chatroom` — proxied from Chatlog core
+- `GET /api/v1/session`, `/api/v1/contact`, `/api/v1/chatroom` — proxy core endpoints
 
-Extra `/api/v1/chatlog` parameters:
+Extra `/api/v1/chatlog` parameters are `resolve_media=1`, `transcribe_voice=1`,
+`transcript_limit`, `transcript_model`, and `transcript_language`.
 
-- `resolve_media=1`
-- `transcribe_voice=1`
-- `transcript_limit=20`
-- `transcript_model=turbo`
-- `transcript_language=zh`
+## Privacy and licensing
 
-## Privacy notes
+The transcript cache contains private message text. DPAPI protects the saved keys from other
+Windows users but does not protect data after the signed-in user launches the processes. Read
+[`SECURITY.md`](SECURITY.md) before exposing or sharing any state directory.
 
-The SQLite transcript cache contains private message text. It is intentionally excluded by
-`.gitignore`, but users remain responsible for protecting and deleting their own local data.
-See [SECURITY.md](SECURITY.md).
-
-## License
-
-Chatlog Plus is licensed under the MIT License. Chatlog is a separate Apache-2.0 project;
-see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Chatlog Plus is MIT-licensed. The pinned Chatlog core source and resulting binary remain under
+Apache-2.0; modifications are documented in the checked-in patch and
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

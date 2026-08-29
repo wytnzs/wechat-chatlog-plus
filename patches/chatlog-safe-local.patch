@@ -1,0 +1,126 @@
+diff --git a/cmd/chatlog/cmd_server.go b/cmd/chatlog/cmd_server.go
+index c606f62..7926f34 100644
+--- a/cmd/chatlog/cmd_server.go
++++ b/cmd/chatlog/cmd_server.go
+@@ -38,7 +38,17 @@ var serverCmd = &cobra.Command{
+ 	Run: func(cmd *cobra.Command, args []string) {
+ 
+ 		cmdConf := getServerConfig()
+-		log.Info().Msgf("server cmd config: %+v", cmdConf)
++		safeCmdConf := make(map[string]any, len(cmdConf))
++		for key, value := range cmdConf {
++			safeCmdConf[key] = value
++		}
++		if _, ok := safeCmdConf["data_key"]; ok {
++			safeCmdConf["data_key"] = "[redacted]"
++		}
++		if _, ok := safeCmdConf["img_key"]; ok {
++			safeCmdConf["img_key"] = "[redacted]"
++		}
++		log.Info().Msgf("server cmd config: %+v", safeCmdConf)
+ 
+ 		m := chatlog.New()
+ 		if err := m.CommandHTTPServer("", cmdConf); err != nil {
+diff --git a/internal/chatlog/conf/conf.go b/internal/chatlog/conf/conf.go
+index 65d53d6..05bf6b7 100644
+--- a/internal/chatlog/conf/conf.go
++++ b/internal/chatlog/conf/conf.go
+@@ -38,7 +38,13 @@ func LoadTUIConfig(configPath string) (*TUIConfig, *config.Manager, error) {
+ 	}
+ 	conf.ConfigDir = tcm.Path
+ 
+-	b, _ := json.Marshal(conf)
++	safeConf := *conf
++	safeConf.History = append([]ProcessConfig(nil), conf.History...)
++	for i := range safeConf.History {
++		safeConf.History[i].DataKey = "[redacted]"
++		safeConf.History[i].ImgKey = "[redacted]"
++	}
++	b, _ := json.Marshal(&safeConf)
+ 	log.Info().Msgf("tui config: %s", string(b))
+ 
+ 	return conf, tcm, nil
+@@ -89,7 +95,10 @@ func LoadServiceConfig(configPath string, cmdConf map[string]any) (*ServerConfig
+ 		}
+ 	}
+ 
+-	b, _ := json.Marshal(conf)
++	safeConf := *conf
++	safeConf.DataKey = "[redacted]"
++	safeConf.ImgKey = "[redacted]"
++	b, _ := json.Marshal(&safeConf)
+ 	log.Info().Msgf("server config: %s", string(b))
+ 
+ 	return conf, scm, nil
+diff --git a/internal/chatlog/manager.go b/internal/chatlog/manager.go
+index 8ce20e7..b49c27f 100644
+--- a/internal/chatlog/manager.go
++++ b/internal/chatlog/manager.go
+@@ -263,10 +263,10 @@ func (m *Manager) CommandKey(configPath string, pid int, force bool, showXorKey
+ 				return "", err
+ 			}
+ 			m.ctx.Refresh()
+-			m.ctx.UpdateConfig()
+ 		}
+ 
+-		result := fmt.Sprintf("Data Key: [%s]\nImage Key: [%s]", key, imgKey)
++		instance := m.ctx.WeChatInstances[0]
++		result := fmt.Sprintf("Platform: [%s]\nVersion: [%d]\nFull Version: [%s]\nData Dir: [%s]\nData Key: [%s]\nImage Key: [%s]", instance.Platform, instance.Version, instance.FullVersion, instance.DataDir, key, imgKey)
+ 		if m.ctx.Version == 4 && showXorKey {
+ 			if b, err := dat2img.ScanAndSetXorKey(m.ctx.DataDir); err == nil {
+ 				result += fmt.Sprintf("\nXor Key: [0x%X]", b)
+@@ -291,9 +291,8 @@ func (m *Manager) CommandKey(configPath string, pid int, force bool, showXorKey
+ 					return "", err
+ 				}
+ 				m.ctx.Refresh()
+-				m.ctx.UpdateConfig()
+ 			}
+-			result := fmt.Sprintf("Data Key: [%s]\nImage Key: [%s]", key, imgKey)
++			result := fmt.Sprintf("Platform: [%s]\nVersion: [%d]\nFull Version: [%s]\nData Dir: [%s]\nData Key: [%s]\nImage Key: [%s]", ins.Platform, ins.Version, ins.FullVersion, ins.DataDir, key, imgKey)
+ 			if m.ctx.Version == 4 && showXorKey {
+ 				if b, err := dat2img.ScanAndSetXorKey(m.ctx.DataDir); err == nil {
+ 					result += fmt.Sprintf("\nXor Key: [0x%X]", b)
+@@ -358,7 +357,7 @@ func (m *Manager) CommandHTTPServer(configPath string, cmdConf map[string]any) e
+ 		go dat2img.ScanAndSetXorKey(dataDir)
+ 	}
+ 
+-	log.Info().Msgf("server config: %+v", m.sc)
++	log.Info().Msg("server configuration loaded (keys redacted)")
+ 
+ 	m.wechat = wechat.NewService(m.sc)
+ 
+diff --git a/internal/wechat/key/windows/v3_windows.go b/internal/wechat/key/windows/v3_windows.go
+index a4acd4c..031090f 100644
+--- a/internal/wechat/key/windows/v3_windows.go
++++ b/internal/wechat/key/windows/v3_windows.go
+@@ -199,7 +199,7 @@ func (e *V3Extractor) worker(ctx context.Context, handle windows.Handle, is64Bit
+ 					if key := e.validateKey(handle, ptrValue); key != "" {
+ 						select {
+ 						case resultChannel <- key:
+-							log.Debug().Msg("Valid key found: " + key)
++							log.Debug().Msg("Valid data key found (redacted)")
+ 							return
+ 						default:
+ 						}
+diff --git a/internal/wechat/key/windows/v4_windows.go b/internal/wechat/key/windows/v4_windows.go
+index 5f80d5d..396f1c8 100644
+--- a/internal/wechat/key/windows/v4_windows.go
++++ b/internal/wechat/key/windows/v4_windows.go
+@@ -225,7 +225,7 @@ func (e *V4Extractor) worker(ctx context.Context, handle windows.Handle, memoryC
+ 						if isImgKey {
+ 							if imgKey == "" {
+ 								imgKey = key
+-								log.Debug().Msg("Image key found: " + key)
++								log.Debug().Msg("Image key found (redacted)")
+ 								// Report immediately when found
+ 								select {
+ 								case resultChannel <- [2]string{dataKey, imgKey}:
+@@ -236,7 +236,7 @@ func (e *V4Extractor) worker(ctx context.Context, handle windows.Handle, memoryC
+ 						} else {
+ 							if dataKey == "" {
+ 								dataKey = key
+-								log.Debug().Msg("Data key found: " + key)
++								log.Debug().Msg("Data key found (redacted)")
+ 								// Report immediately when found
+ 								select {
+ 								case resultChannel <- [2]string{dataKey, imgKey}:

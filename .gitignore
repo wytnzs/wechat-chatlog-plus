@@ -9,6 +9,8 @@ models/
 state/
 dist/
 build/
+*.exe
+*.download
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

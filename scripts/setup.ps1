@@ -1,4 +1,10 @@
+param(
+    [switch] $BuildCoreFromSource,
+    [switch] $SkipCore
+)
+
 $ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $venvDir = Join-Path $repoRoot '.venv'
@@ -16,4 +22,12 @@ $python = Join-Path $venvDir 'Scripts\python.exe'
 & $python -m pip install --upgrade pip
 & $python -m pip install -r $requirements
 
-Write-Host 'Chatlog Plus is ready. Run scripts\start-chatlog-plus.ps1 after starting Chatlog core.'
+if (-not $SkipCore) {
+    if ($BuildCoreFromSource) {
+        & (Join-Path $PSScriptRoot 'build-chatlog-core.ps1')
+    } else {
+        & (Join-Path $PSScriptRoot 'install-chatlog-core.ps1')
+    }
+}
+
+Write-Host 'Setup complete. Keep WeChat open, then run scripts\save-wechat-keys.ps1 once.'
