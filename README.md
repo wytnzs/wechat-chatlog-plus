@@ -1,5 +1,8 @@
 # WeChat Chatlog Plus
 
+**首个面向 Windows 微信 4.x、支持新版掩码数据密钥提取，并提供可复现构建、
+DPAPI 本地密钥保存、媒体解析和语音转写的一体化 Chatlog 方案。**
+
 A reproducible, local-only Windows stack for querying WeChat chat history and resolving or
 transcribing local media. It includes:
 
