@@ -1,7 +1,7 @@
 {
-  "tag": "core-eb9572e-local1",
-  "url": "https://github.com/Sherlock488/wechat-chatlog-plus/releases/download/core-eb9572e-local1/chatlog-core-windows-amd64.exe",
-  "sha256": "aba7e2ce07d0ab6d3fb23cc6f7f6acb4569252fc64bb688ace3df8975ad67d69",
+  "tag": "core-eb9572e-local2",
+  "url": "https://github.com/Sherlock488/wechat-chatlog-plus/releases/download/core-eb9572e-local2/chatlog-core-windows-amd64.exe",
+  "sha256": "3009e4f9e0cb52b525a14c2145ffaffc2046d3ecd531f6bb88e2419296f730d8",
   "source_commit": "eb9572ee028cbaa72a50749b9dfe6630b317228f",
   "go_version": "go1.24.13",
   "gcc_version": "gcc.exe (x86_64-posix-seh-rev0) 8.1.0"

@@ -64,7 +64,7 @@ try {
     $env:CGO_ENABLED = '1'
     Push-Location $paths.Source
     try {
-        & go build -trimpath -ldflags '-X github.com/sjzar/chatlog/pkg/version.Version=eb9572e-local -w -s' -o $paths.Core main.go
+        & go build -trimpath -ldflags '-X github.com/sjzar/chatlog/pkg/version.Version=eb9572e-local2 -w -s' -o $paths.Core main.go
         if ($LASTEXITCODE -ne 0) { throw 'Chatlog core build failed.' }
     } finally {
         Pop-Location

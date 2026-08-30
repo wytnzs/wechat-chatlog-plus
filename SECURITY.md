@@ -9,8 +9,11 @@
 - The patched core receives plaintext keys through its child-process environment. It does not
   receive them as command-line arguments and the launcher clears its temporary environment
   entries after spawning the core.
-- The raw `chatlog key` command necessarily prints a discovered key for its caller. Use
-  `scripts\save-wechat-keys.ps1`, which captures and protects that output without echoing it.
+- The raw `chatlog key` command and the interactive `scripts\save-wechat-keys.ps1` flow display
+  discovered keys to the current terminal user. Pass `-Quiet` to the wrapper when terminal
+  display or scrollback history is unwanted.
+- A missing image key does not block text-chat startup. A previously protected image key is
+  retained when a later Weixin process exposes only the database key.
 - The transcript cache contains private message content. Store it on a trusted local disk and delete it when no longer needed.
 - Chatlog Plus sends no chat data to a cloud service. Faster Whisper runs locally, although its model files may be downloaded on first use.
 

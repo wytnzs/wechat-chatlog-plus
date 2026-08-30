@@ -55,7 +55,10 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Keep WeChat open on its main window during `save-wechat-keys.ps1`. When several WeChat
 processes exist, the wrapper tries their PIDs in turn and saves only a key that validates
-against the corresponding local database and image data.
+against the corresponding local database. Successful extraction prints the data key and, when
+available, the image key in the user's current PowerShell window. Weixin 4.x does not always
+keep an image key in readable process memory; text chat still works, and an already saved image
+key is retained. Use `-Quiet` when terminal display is unwanted.
 
 Check the installation:
 
@@ -84,6 +87,9 @@ both the repository script path and the resolved stack home used when it is regi
 
 # Refresh keys after a WeChat update or account change
 .\scripts\save-wechat-keys.ps1 -Force
+
+# Save without displaying the keys
+.\scripts\save-wechat-keys.ps1 -Force -Quiet
 
 # Start automatically after Windows sign-in
 .\scripts\register-startup.ps1

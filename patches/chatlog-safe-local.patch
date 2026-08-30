@@ -1,3 +1,8 @@
+warning: in the working copy of 'cmd/chatlog/cmd_server.go', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'internal/chatlog/conf/conf.go', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'internal/chatlog/manager.go', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'internal/wechat/key/windows/v3_windows.go', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'internal/wechat/key/windows/v4_windows.go', LF will be replaced by CRLF the next time Git touches it
 diff --git a/cmd/chatlog/cmd_server.go b/cmd/chatlog/cmd_server.go
 index c606f62..7926f34 100644
 --- a/cmd/chatlog/cmd_server.go
@@ -103,24 +108,548 @@ index a4acd4c..031090f 100644
  						default:
  						}
 diff --git a/internal/wechat/key/windows/v4_windows.go b/internal/wechat/key/windows/v4_windows.go
-index 5f80d5d..396f1c8 100644
+index 5f80d5d..9edff12 100644
 --- a/internal/wechat/key/windows/v4_windows.go
 +++ b/internal/wechat/key/windows/v4_windows.go
-@@ -225,7 +225,7 @@ func (e *V4Extractor) worker(ctx context.Context, handle windows.Handle, memoryC
- 						if isImgKey {
- 							if imgKey == "" {
- 								imgKey = key
+@@ -5,7 +5,10 @@ import (
+ 	"context"
+ 	"encoding/binary"
+ 	"encoding/hex"
++	"os"
++	"path/filepath"
+ 	"runtime"
++	"strings"
+ 	"sync"
+ 	"unsafe"
+ 
+@@ -17,30 +20,56 @@ import (
+ )
+ 
+ const (
+-	MEM_PRIVATE = 0x20000
++	MEM_PRIVATE       = 0x20000
++	v4MemoryChunkSize = 4 * 1024 * 1024
+ )
+ 
++var v4KeyPattern = []byte{
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x2F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++}
++
++type v4MemoryChunk struct {
++	handle windows.Handle
++	pid    uint32
++	data   []byte
++}
++
++type v4CandidateID struct {
++	pid  uint32
++	addr uint64
++}
++
+ func (e *V4Extractor) Extract(ctx context.Context, proc *model.Process) (string, string, error) {
+ 	if proc.Status == model.StatusOffline {
+ 		return "", "", errors.ErrWeChatOffline
+ 	}
+ 
+-	// Open process handle
+-	handle, err := windows.OpenProcess(windows.PROCESS_VM_READ|windows.PROCESS_QUERY_INFORMATION, false, proc.PID)
+-	if err != nil {
+-		return "", "", errors.OpenProcessFailed(err)
++	pids := relatedWeixinPIDs(proc.PID)
++	internalMasks := loadInternalDBMasks(proc.ExePath, proc.FullVersion)
++	handles := make(map[uint32]windows.Handle, len(pids))
++	for _, pid := range pids {
++		handle, err := windows.OpenProcess(windows.PROCESS_VM_READ|windows.PROCESS_QUERY_INFORMATION, false, pid)
++		if err != nil {
++			log.Debug().Err(err).Uint32("pid", pid).Msg("Unable to open related Weixin process")
++			continue
++		}
++		handles[pid] = handle
++	}
++	defer func() {
++		for _, handle := range handles {
++			windows.CloseHandle(handle)
++		}
++	}()
++	if len(handles) == 0 {
++		return "", "", errors.ErrNoValidKey
+ 	}
+-	defer windows.CloseHandle(handle)
+ 
+-	// Create context to control all goroutines
+ 	searchCtx, cancel := context.WithCancel(ctx)
+ 	defer cancel()
+-
+-	// Create channels for memory data and results
+-	memoryChannel := make(chan []byte, 100)
+-	resultChannel := make(chan [2]string, 1)
+-
+-	// Determine number of worker goroutines
++	memoryChannel := make(chan v4MemoryChunk, 32)
++	resultChannel := make(chan [2]string, 4)
+ 	workerCount := runtime.NumCPU()
+ 	if workerCount < 2 {
+ 		workerCount = 2
+@@ -48,233 +77,312 @@ func (e *V4Extractor) Extract(ctx context.Context, proc *model.Process) (string,
+ 	if workerCount > MaxWorkers {
+ 		workerCount = MaxWorkers
+ 	}
+-	log.Debug().Msgf("Starting %d workers for V4 key search", workerCount)
+ 
+-	// Start consumer goroutines
++	var seen sync.Map
+ 	var workerWaitGroup sync.WaitGroup
+ 	workerWaitGroup.Add(workerCount)
+ 	for index := 0; index < workerCount; index++ {
+ 		go func() {
+ 			defer workerWaitGroup.Done()
+-			e.worker(searchCtx, handle, memoryChannel, resultChannel)
++			e.worker(searchCtx, memoryChannel, resultChannel, &seen, internalMasks)
+ 		}()
+ 	}
+ 
+-	// Start producer goroutine
+-	var producerWaitGroup sync.WaitGroup
+-	producerWaitGroup.Add(1)
+ 	go func() {
+-		defer producerWaitGroup.Done()
+-		defer close(memoryChannel) // Close channel when producer is done
+-		err := e.findMemory(searchCtx, handle, memoryChannel)
+-		if err != nil {
+-			log.Err(err).Msg("Failed to find memory regions")
++		defer close(memoryChannel)
++		for _, pid := range pids {
++			handle, ok := handles[pid]
++			if !ok {
++				continue
++			}
++			if err := e.findMemory(searchCtx, pid, handle, memoryChannel); err != nil {
++				log.Debug().Err(err).Uint32("pid", pid).Msg("Failed to scan related Weixin process")
++			}
+ 		}
+ 	}()
+-
+-	// Wait for producer and consumers to complete
+ 	go func() {
+-		producerWaitGroup.Wait()
+ 		workerWaitGroup.Wait()
+ 		close(resultChannel)
+ 	}()
+ 
+-	// Wait for result
+-	var finalDataKey, finalImgKey string
+-
++	var dataKey, imgKey string
+ 	for {
+ 		select {
+ 		case <-ctx.Done():
+ 			return "", "", ctx.Err()
+ 		case result, ok := <-resultChannel:
+ 			if !ok {
+-				// Channel closed, all workers finished, return whatever keys we found
+-				if finalDataKey != "" || finalImgKey != "" {
+-					return finalDataKey, finalImgKey, nil
++				if dataKey != "" || imgKey != "" {
++					return dataKey, imgKey, nil
+ 				}
+ 				return "", "", errors.ErrNoValidKey
+ 			}
+-
+-			// Update our best found keys
+ 			if result[0] != "" {
+-				finalDataKey = result[0]
++				dataKey = result[0]
+ 			}
+ 			if result[1] != "" {
+-				finalImgKey = result[1]
++				imgKey = result[1]
+ 			}
+-
+-			// If we have both keys, we can return early
+-			if finalDataKey != "" && finalImgKey != "" {
+-				cancel() // Cancel remaining work
+-				return finalDataKey, finalImgKey, nil
++			// Current Weixin 4.x keeps the database key behind an internal mask, while
++			// the image key is not consistently resident in the same process. Return
++			// as soon as the database key validates; callers can keep or supply an
++			// independently discovered image key.
++			if dataKey != "" {
++				cancel()
++				return dataKey, imgKey, nil
+ 			}
+ 		}
+ 	}
+ }
+ 
+-// findMemoryV4 searches for writable memory regions for V4 version
+-func (e *V4Extractor) findMemory(ctx context.Context, handle windows.Handle, memoryChannel chan<- []byte) error {
+-	// Define search range
+-	minAddr := uintptr(0x10000)    // Process space usually starts from 0x10000
+-	maxAddr := uintptr(0x7FFFFFFF) // 32-bit process space limit
++func relatedWeixinPIDs(rootPID uint32) []uint32 {
++	type processInfo struct {
++		pid    uint32
++		parent uint32
++		name   string
++	}
+ 
+-	if runtime.GOARCH == "amd64" {
+-		maxAddr = uintptr(0x7FFFFFFFFFFF) // 64-bit process space limit
++	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
++	if err != nil {
++		return []uint32{rootPID}
++	}
++	defer windows.CloseHandle(snapshot)
++
++	var entries []processInfo
++	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
++	if err = windows.Process32First(snapshot, &entry); err == nil {
++		for {
++			entries = append(entries, processInfo{
++				pid: entry.ProcessID, parent: entry.ParentProcessID,
++				name: strings.TrimSuffix(strings.ToLower(windows.UTF16ToString(entry.ExeFile[:])), ".exe"),
++			})
++			if err = windows.Process32Next(snapshot, &entry); err != nil {
++				break
++			}
++		}
+ 	}
+-	log.Debug().Msgf("Scanning memory regions from 0x%X to 0x%X", minAddr, maxAddr)
+ 
++	selected := map[uint32]bool{rootPID: true}
++	for changed := true; changed; {
++		changed = false
++		for _, item := range entries {
++			if item.name == "weixin" && selected[item.parent] && !selected[item.pid] {
++				selected[item.pid] = true
++				changed = true
++			}
++		}
++	}
++
++	result := []uint32{rootPID}
++	for _, item := range entries {
++		if item.pid != rootPID && selected[item.pid] {
++			result = append(result, item.pid)
++		}
++	}
++	log.Debug().Msgf("Scanning related Weixin processes: %v", result)
++	return result
++}
++
++func (e *V4Extractor) findMemory(ctx context.Context, pid uint32, handle windows.Handle, memoryChannel chan<- v4MemoryChunk) error {
++	minAddr := uintptr(0x10000)
++	maxAddr := uintptr(0x7FFFFFFFFFFF)
+ 	currentAddr := minAddr
+ 
+ 	for currentAddr < maxAddr {
+ 		var memInfo windows.MemoryBasicInformation
+-		err := windows.VirtualQueryEx(handle, currentAddr, &memInfo, unsafe.Sizeof(memInfo))
+-		if err != nil {
++		if err := windows.VirtualQueryEx(handle, currentAddr, &memInfo, unsafe.Sizeof(memInfo)); err != nil {
+ 			break
+ 		}
+-
+-		// Skip small memory regions
+-		if memInfo.RegionSize < 1024*1024 {
+-			currentAddr += uintptr(memInfo.RegionSize)
+-			continue
++		nextAddr := uintptr(memInfo.BaseAddress) + uintptr(memInfo.RegionSize)
++		if nextAddr <= currentAddr {
++			break
+ 		}
+-
+-		// Check if memory region is readable and private
+-		if memInfo.State == windows.MEM_COMMIT && (memInfo.Protect&windows.PAGE_READWRITE) != 0 && memInfo.Type == MEM_PRIVATE {
+-			// Calculate region size, ensure it doesn't exceed limit
+-			regionSize := uintptr(memInfo.RegionSize)
+-			if currentAddr+regionSize > maxAddr {
+-				regionSize = maxAddr - currentAddr
+-			}
+-
+-			// Read memory region
+-			memory := make([]byte, regionSize)
+-			if err = windows.ReadProcessMemory(handle, currentAddr, &memory[0], regionSize, nil); err == nil {
+-				select {
+-				case memoryChannel <- memory:
+-					log.Debug().Msgf("Memory region for analysis: 0x%X - 0x%X, size: %d bytes", currentAddr, currentAddr+regionSize, regionSize)
+-				case <-ctx.Done():
+-					return nil
++		if memInfo.State == windows.MEM_COMMIT && memInfo.Type == MEM_PRIVATE && (memInfo.Protect&windows.PAGE_READWRITE) != 0 {
++			regionStart := uintptr(memInfo.BaseAddress)
++			regionEnd := nextAddr
++			for chunkStart := regionStart; chunkStart < regionEnd; {
++				chunkSize := uintptr(v4MemoryChunkSize)
++				if remaining := regionEnd - chunkStart; remaining < chunkSize {
++					chunkSize = remaining
+ 				}
++				memory := make([]byte, chunkSize)
++				if err := windows.ReadProcessMemory(handle, chunkStart, &memory[0], chunkSize, nil); err == nil {
++					select {
++					case memoryChannel <- v4MemoryChunk{handle: handle, pid: pid, data: memory}:
++					case <-ctx.Done():
++						return nil
++					}
++				}
++				advance := chunkSize
++				if chunkStart+chunkSize < regionEnd && advance > uintptr(len(v4KeyPattern)+8-1) {
++					advance -= uintptr(len(v4KeyPattern) + 8 - 1)
++				}
++				chunkStart += advance
+ 			}
+ 		}
+-
+-		// Move to next memory region
+-		currentAddr = uintptr(memInfo.BaseAddress) + uintptr(memInfo.RegionSize)
++		currentAddr = nextAddr
+ 	}
+-
+ 	return nil
+ }
+ 
+-// workerV4 processes memory regions to find V4 version key
+-func (e *V4Extractor) worker(ctx context.Context, handle windows.Handle, memoryChannel <-chan []byte, resultChannel chan<- [2]string) {
+-	// Define search pattern for V4
+-	keyPattern := []byte{
+-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+-		0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+-		0x2F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+-	}
+-	ptrSize := 8
+-	littleEndianFunc := binary.LittleEndian.Uint64
+-
+-	// Track found keys
+-	var dataKey, imgKey string
+-	keysFound := make(map[uint64]bool) // Track processed addresses to avoid duplicates
+-
++func (e *V4Extractor) worker(ctx context.Context, memoryChannel <-chan v4MemoryChunk, resultChannel chan<- [2]string, seen *sync.Map, internalMasks [][32]byte) {
+ 	for {
+ 		select {
+ 		case <-ctx.Done():
+ 			return
+-		case memory, ok := <-memoryChannel:
++		case chunk, ok := <-memoryChannel:
+ 			if !ok {
+-				// Memory scanning complete, return whatever keys we found
+-				if dataKey != "" || imgKey != "" {
+-					select {
+-					case resultChannel <- [2]string{dataKey, imgKey}:
+-					default:
+-					}
+-				}
+ 				return
+ 			}
+-
+-			index := len(memory)
++			index := len(chunk.data)
+ 			for {
+-				select {
+-				case <-ctx.Done():
+-					return // Exit if context cancelled
+-				default:
+-				}
+-
+-				// Find pattern from end to beginning
+-				index = bytes.LastIndex(memory[:index], keyPattern)
+-				if index == -1 || index-ptrSize < 0 {
++				index = bytes.LastIndex(chunk.data[:index], v4KeyPattern)
++				if index < 8 {
+ 					break
+ 				}
+-
+-				// Extract and validate pointer value
+-				ptrValue := littleEndianFunc(memory[index-ptrSize : index])
++				ptrValue := binary.LittleEndian.Uint64(chunk.data[index-8 : index])
+ 				if ptrValue > 0x10000 && ptrValue < 0x7FFFFFFFFFFF {
+-					// Skip if we've already processed this address
+-					if keysFound[ptrValue] {
+-						index -= 1
+-						continue
+-					}
+-					keysFound[ptrValue] = true
+-
+-					// Validate key and determine type
+-					if key, isImgKey := e.validateKey(handle, ptrValue); key != "" {
+-						if isImgKey {
+-							if imgKey == "" {
+-								imgKey = key
 -								log.Debug().Msg("Image key found: " + key)
-+								log.Debug().Msg("Image key found (redacted)")
- 								// Report immediately when found
- 								select {
- 								case resultChannel <- [2]string{dataKey, imgKey}:
-@@ -236,7 +236,7 @@ func (e *V4Extractor) worker(ctx context.Context, handle windows.Handle, memoryC
- 						} else {
- 							if dataKey == "" {
- 								dataKey = key
+-								// Report immediately when found
+-								select {
+-								case resultChannel <- [2]string{dataKey, imgKey}:
+-								case <-ctx.Done():
+-									return
+-								}
++					candidateID := v4CandidateID{pid: chunk.pid, addr: ptrValue}
++					if _, loaded := seen.LoadOrStore(candidateID, struct{}{}); !loaded {
++						if keyData := readV4Candidate(chunk.handle, ptrValue); plausibleV4Candidate(keyData) {
++							key, isImgKey := e.validateKeyData(keyData, internalMasks)
++							if key == "" {
++								index--
++								continue
+ 							}
+-						} else {
+-							if dataKey == "" {
+-								dataKey = key
 -								log.Debug().Msg("Data key found: " + key)
+-								// Report immediately when found
+-								select {
+-								case resultChannel <- [2]string{dataKey, imgKey}:
+-								case <-ctx.Done():
+-									return
+-								}
++							result := [2]string{}
++							if isImgKey {
++								result[1] = key
++								log.Debug().Msg("Image key found (redacted)")
++							} else {
++								result[0] = key
 +								log.Debug().Msg("Data key found (redacted)")
- 								// Report immediately when found
- 								select {
- 								case resultChannel <- [2]string{dataKey, imgKey}:
++							}
++							select {
++							case resultChannel <- result:
++							case <-ctx.Done():
++								return
+ 							}
+-						}
+-
+-						// If we have both keys, exit worker
+-						if dataKey != "" && imgKey != "" {
+-							log.Debug().Msg("Both keys found, worker exiting")
+-							return
+ 						}
+ 					}
+ 				}
+-				index -= 1 // Continue searching from previous position
++				index--
+ 			}
+ 		}
+ 	}
+ }
+ 
+-// validateKey validates a single key candidate and returns the key and whether it's an image key
+-func (e *V4Extractor) validateKey(handle windows.Handle, addr uint64) (string, bool) {
+-	keyData := make([]byte, 0x20) // 32-byte key
++func readV4Candidate(handle windows.Handle, addr uint64) []byte {
++	keyData := make([]byte, 0x20)
+ 	if err := windows.ReadProcessMemory(handle, uintptr(addr), &keyData[0], uintptr(len(keyData)), nil); err != nil {
+-		return "", false
++		return nil
+ 	}
++	return keyData
++}
+ 
+-	// First check if it's a valid database key
+-	if e.validator.Validate(keyData) {
+-		return hex.EncodeToString(keyData), false // Data key
++func plausibleV4Candidate(keyData []byte) bool {
++	if len(keyData) != 32 {
++		return false
+ 	}
++	unique := make(map[byte]struct{}, 32)
++	printable := 0
++	for _, value := range keyData {
++		unique[value] = struct{}{}
++		if value >= 0x20 && value <= 0x7e {
++			printable++
++		}
++	}
++	return len(unique) >= 15 && printable <= 24
++}
+ 
+-	// Then check if it's a valid image key
++func (e *V4Extractor) validateKeyData(keyData []byte, internalMasks [][32]byte) (string, bool) {
++	if e.validator.Validate(keyData) {
++		return hex.EncodeToString(keyData), false
++	}
+ 	if e.validator.ValidateImgKey(keyData) {
+-		return hex.EncodeToString(keyData[:16]), true // Image key
++		return hex.EncodeToString(keyData[:16]), true
++	}
++	for _, mask := range internalMasks {
++		transformed := make([]byte, 32)
++		for index := range transformed {
++			transformed[index] = keyData[index] ^ mask[index]
++		}
++		if e.validator.Validate(transformed) {
++			return hex.EncodeToString(transformed), false
++		}
++		if e.validator.ValidateImgKey(transformed) {
++			return hex.EncodeToString(transformed[:16]), true
++		}
+ 	}
+-
+ 	return "", false
+ }
++
++func loadInternalDBMasks(exePath, fullVersion string) [][32]byte {
++	baseDir := filepath.Dir(exePath)
++	paths := []string{
++		filepath.Join(baseDir, fullVersion, "Weixin.dll"),
++		filepath.Join(baseDir, "Weixin.dll"),
++		exePath,
++	}
++	seen := make(map[[32]byte]struct{})
++	var result [][32]byte
++	for _, path := range paths {
++		data, err := os.ReadFile(path)
++		if err != nil {
++			continue
++		}
++		for _, mask := range scanInternalDBMasks(data) {
++			if _, exists := seen[mask]; exists {
++				continue
++			}
++			seen[mask] = struct{}{}
++			result = append(result, mask)
++		}
++	}
++	log.Debug().Msgf("Loaded %d internal database masks", len(result))
++	return result
++}
++
++func scanInternalDBMasks(data []byte) [][32]byte {
++	movMask := []byte{0x48, 0xBA}
++	testRAX := []byte{0x48, 0x85, 0xC0}
++	var result [][32]byte
++	for searchStart := 0; searchStart+10 <= len(data); {
++		relative := bytes.Index(data[searchStart:], movMask)
++		if relative < 0 {
++			break
++		}
++		instruction := searchStart + relative
++		var mask [32]byte
++		valid := true
++		for part := 0; part < 4; part++ {
++			if instruction+10 > len(data) || !bytes.Equal(data[instruction:instruction+2], movMask) {
++				valid = false
++				break
++			}
++			copy(mask[part*8:(part+1)*8], data[instruction+2:instruction+10])
++			nextPattern := movMask
++			if part == 3 {
++				nextPattern = testRAX
++			}
++			next := -1
++			for gap := 3; gap <= 8; gap++ {
++				candidate := instruction + 10 + gap
++				if candidate+len(nextPattern) <= len(data) && bytes.Equal(data[candidate:candidate+len(nextPattern)], nextPattern) {
++					next = candidate
++					break
++				}
++			}
++			if next < 0 {
++				valid = false
++				break
++			}
++			instruction = next
++		}
++		if valid {
++			result = append(result, mask)
++		}
++		searchStart += relative + 1
++	}
++	return result
++}

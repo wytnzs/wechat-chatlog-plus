@@ -1,3 +1,8 @@
+param(
+    [ValidateRange(1, 65535)] [int] $CorePort = 5030,
+    [ValidateRange(1, 65535)] [int] $PlusPort = 5031
+)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -11,8 +16,8 @@ $checks = [ordered]@{
     metadata = Test-Path -LiteralPath $paths.Metadata
     data_key_dpapi = Test-Path -LiteralPath $paths.DataSecret
     image_key_dpapi = Test-Path -LiteralPath $paths.ImgSecret
-    core_http_5030 = Test-LocalHttp 'http://127.0.0.1:5030/api/v1/session'
-    plus_http_5031 = Test-LocalHttp 'http://127.0.0.1:5031/health'
+    core_http = Test-LocalHttp "http://127.0.0.1:$CorePort/api/v1/session"
+    plus_http = Test-LocalHttp "http://127.0.0.1:$PlusPort/health"
 }
 
 if ($checks.data_key_dpapi) {

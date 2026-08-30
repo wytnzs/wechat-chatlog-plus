@@ -1,6 +1,7 @@
 param(
     [Alias('Pid')] [int] $ProcessId = 0,
-    [switch] $Force
+    [switch] $Force,
+    [switch] $Quiet
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,9 +44,9 @@ try {
 }
 
 $dataKeyMatch = [regex]::Match($output, '(?m)^Data Key: \[([0-9a-fA-F]{64})\]\s*$')
-$imageKeyMatch = [regex]::Match($output, '(?m)^Image Key: \[([0-9a-fA-F]{16,64})\]\s*$')
-if (-not $dataKeyMatch.Success -or -not $imageKeyMatch.Success) {
-    throw 'No validated keys were returned. Keep WeChat open on the main chat window and retry.'
+$imageKeyMatch = [regex]::Match($output, '(?m)^Image Key: \[([0-9a-fA-F]{16,64})?\]\s*$')
+if (-not $dataKeyMatch.Success) {
+    throw 'No validated data key was returned. Keep WeChat open on the main chat window and retry.'
 }
 
 $platformMatch = [regex]::Match($output, '(?m)^Platform: \[(.+)\]\s*$')
@@ -57,19 +58,35 @@ if (-not $platformMatch.Success -or -not $versionMatch.Success -or -not $dataDir
 }
 
 $dataKey = $dataKeyMatch.Groups[1].Value.ToLowerInvariant()
-$imageKey = $imageKeyMatch.Groups[1].Value.ToLowerInvariant()
+$imageKey = if ($imageKeyMatch.Success) { $imageKeyMatch.Groups[1].Value.ToLowerInvariant() } else { '' }
 try {
     Protect-ChatlogSecret -PlainText $dataKey -Destination $paths.DataSecret
-    Protect-ChatlogSecret -PlainText $imageKey -Destination $paths.ImgSecret
+    $imageKeyRefreshed = -not [string]::IsNullOrWhiteSpace($imageKey)
+    if ($imageKeyRefreshed) {
+        Protect-ChatlogSecret -PlainText $imageKey -Destination $paths.ImgSecret
+    } elseif (Test-Path -LiteralPath $paths.ImgSecret) {
+        $imageKey = Unprotect-ChatlogSecret -Source $paths.ImgSecret
+    }
 
     $metadata = [ordered]@{
         platform = $platformMatch.Groups[1].Value
         version = [int]$versionMatch.Groups[1].Value
         full_version = $fullVersionMatch.Groups[1].Value
         data_dir = $dataDirMatch.Groups[1].Value
+        image_key_available = -not [string]::IsNullOrWhiteSpace($imageKey)
+        image_key_refreshed = $imageKeyRefreshed
         saved_at = [DateTimeOffset]::Now.ToString('o')
     }
     [IO.File]::WriteAllText($paths.Metadata, ($metadata | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+
+    if (-not $Quiet) {
+        Write-Host "Data Key:  $dataKey"
+        if ($imageKey) {
+            Write-Host "Image Key: $imageKey"
+        } else {
+            Write-Host 'Image Key: not found (text chat remains available; image decoding needs a separately supplied key)'
+        }
+    }
 } finally {
     $dataKey = $null
     $imageKey = $null
@@ -79,4 +96,4 @@ try {
     [GC]::Collect()
 }
 
-Write-Host 'Validated WeChat keys were saved with Windows user-scoped DPAPI encryption.'
+Write-Host 'The validated WeChat data key and any available image key were saved with Windows user-scoped DPAPI encryption.'

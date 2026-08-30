@@ -30,4 +30,5 @@ Start-Process -FilePath $python `
     -RedirectStandardOutput (Join-Path $logDir 'stdout.log') `
     -RedirectStandardError (Join-Path $logDir 'stderr.log')
 
-Write-Host 'Chatlog Plus started at http://127.0.0.1:5031'
+$plusPort = if ($env:CHATLOG_PLUS_PORT) { $env:CHATLOG_PLUS_PORT } else { '5031' }
+Write-Host "Chatlog Plus started at http://127.0.0.1:$plusPort"
