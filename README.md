@@ -12,6 +12,9 @@ transcribing local media. It includes:
 - the Chatlog Plus media and voice companion on `127.0.0.1:5031`;
 - one-command start, diagnostics, startup registration, and uninstall scripts.
 
+
+> Fork note: based on [Sherlock488/wechat-chatlog-plus](https://github.com/Sherlock488/wechat-chatlog-plus); this fork adds on-demand Moments (朋友圈) lookup and export.
+
 No WeChat database, key, media file, transcript, account detail, or model is committed to
 this repository or uploaded by the stack.
 
@@ -140,6 +143,38 @@ HTTP equivalent:
 ```text
 http://127.0.0.1:5031/api/v1/chatlog?time=2026-08-26&talker=CONTACT_OR_GROUP&format=json&resolve_media=1&transcribe_voice=1
 ```
+
+### Moments lookup (朋友圈)
+
+`moments` decrypts a private copy of `db_storage/sns/sns.db` with the same DPAPI key,
+reads it, and deletes the plaintext copy. It never modifies the source database.
+
+**On-demand (default): one person, no files written.**
+
+```powershell
+# Resolve a remark/nickname via contact.db, print that person's Moments as JSON
+.\.venv\Scripts\python.exe .\chatlog_plus.py moments person --name "刘立群" --limit 20
+
+# Or skip name resolution
+.\.venv\Scripts\python.exe .\chatlog_plus.py moments person --wxid wxid_xxx --since 2026-01-01
+```
+
+Use this together with `chatlog` when analysing a contact: chat history plus that person's
+own Moments. Output goes to stdout; nothing is written to disk unless `--out` is given.
+
+**Bulk export: only when an archive is actually needed.**
+
+```powershell
+.\.venv\Scripts\python.exe .\chatlog_plus.py moments export --out D:\private\moments --self-only --format both
+```
+
+Limits:
+
+- Only data already synced to this PC; phone-only history is not included.
+- Images and videos are exported as reference URLs, not files.
+- If `sns.db-wal` is non-empty, the newest few entries may be missing; a warning is printed.
+- Exports contain private text. Prefer `moments person` (stdout, no file) and write only
+  derived conclusions into the customer archive.
 
 ## Configuration
 

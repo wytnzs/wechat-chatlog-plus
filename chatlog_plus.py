@@ -20,6 +20,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+import moments
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -28,7 +30,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 APP_NAME = "Chatlog Plus"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 CORE_BASE = os.environ.get("CHATLOG_CORE_URL", "http://127.0.0.1:5030").rstrip("/")
 PLUS_HOST = os.environ.get("CHATLOG_PLUS_HOST", "127.0.0.1")
 PLUS_PORT = int(os.environ.get("CHATLOG_PLUS_PORT", "5031"))
@@ -600,6 +602,8 @@ def parser() -> argparse.ArgumentParser:
     chatlog.add_argument("--model", default=DEFAULT_MODEL)
     chatlog.add_argument("--language", default=DEFAULT_LANGUAGE)
     chatlog.set_defaults(func=command_chatlog)
+
+    moments.add_parser(sub)
     return parser
 
 
